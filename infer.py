@@ -1,10 +1,7 @@
 from functools import cached_property
 import torch
 
-import click
 import cv2
-import glob
-import os
 import os.path as osp
 from tqdm import tqdm
 import yaml
@@ -12,7 +9,6 @@ import numpy as np
 
 from data_preprocessing.data_preprocess import DataPreprocessor
 from models import get_model
-from resources.consts import IMAGE_EXTS
 from utils.image_utils import tensor2img
 
 from expdataloader import *
@@ -28,11 +24,11 @@ def tensor_from_path(img_path):
 
 
 class VOODOOInfer:
-    def __init__(self):
+    def __init__(self, skip_preprocess=False):
         self.device = "cuda"
         self.config_path = "configs/voodoo3d.yml"
         self.model_path = "pretrained_models/voodoo3d.pth"
-        self.skip_preprocess = False
+        self.skip_preprocess = skip_preprocess
 
     @cached_property
     def processor(self):
@@ -51,12 +47,13 @@ class VOODOOInfer:
         model.eval()
         return model
 
-    def infer_data(self, source_data, driver_data, save_path):
+    def infer_data(self, source_data, driver_data):
         out = self.model(xs_data=source_data, xd_data=driver_data)
         out_hr = tensor2img(out["image"], min_max=(-1, 1))
         source_img = tensor2img(source_data["image"][0], min_max=(-1, 1))
         driver_img = tensor2img(driver_data["image"][0], min_max=(-1, 1))
-        cv2.imwrite(save_path, np.hstack((source_img, driver_img, out_hr)))
+        return source_img, driver_img, out_hr
+        # cv2.imwrite(save_path, np.hstack((source_img, driver_img, out_hr)))
 
     def get_source_data(self, source_img_path):
         if not self.skip_preprocess:
@@ -77,7 +74,8 @@ class VOODOOInfer:
         source_data = self.get_source_data(source_img_path)
         for driver_img_path in driver_img_paths:
             driver_data = self.get_driver_data(driver_img_path)
-            self.infer_data(source_data, driver_data, save_path)
+            source_img, driver_img, out_hr = self.infer_data(source_data, driver_data)
+            cv2.imwrite(save_path, np.hstack((source_img, driver_img, out_hr)))
 
 
 class VOODOOLoader(RowDataLoader):
@@ -92,13 +90,20 @@ class VOODOOLoader(RowDataLoader):
         source_data = self.model.get_source_data(row.source_img_path)
         for driver_img_path in tqdm(row.target.img_paths):
             driver_data = self.model.get_driver_data(driver_img_path)
-            save_path = osp.join(row.ori_output_dir, osp.basename(driver_img_path))
-            self.model.infer_data(source_data, driver_data, save_path)
+            source_img, driver_img, out_hr = self.model.infer_data(source_data, driver_data)
+            data_name = osp.splitext(osp.basename(driver_img_path))[0]
+            cv2.imwrite(f"{row.output.ori_output_comp_dir}/{data_name}.jpg", np.hstack((source_img, driver_img, out_hr)))
+            cv2.imwrite(f"{row.output.ori_output_dir}/{data_name}.jpg", out_hr)
+        row.output.merge_ori_output_comp_video()
+        row.output.merge_ori_output_video()
+        self.retarget_video(row)
 
 
 def main():
     loader = VOODOOLoader()
-    loader.test_20250218()
+    # row = loader.all_data_rows[0]
+    # loader.run_video(row)
+    loader.run_all()
 
 
 if __name__ == "__main__":
